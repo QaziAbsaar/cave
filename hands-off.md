@@ -1,7 +1,7 @@
 # Project Cave — Hands-Off Document
 
-> **Status:** Phase 1 (Complete) + Phase 2 (Complete) + Phase 3 (Complete)
-> **Next:** Phase 4 — Production Readiness
+> **Status:** Phase 1 (Complete) + Phase 2 (Complete) + Phase 3 (Complete) + Phase 4 (Complete)
+> **Next:** Phase 5 — Testing
 > **Last Updated:** 2026-06-15
 
 ---
@@ -52,6 +52,22 @@ cave/
 ├── models.md                    ← LLM tiers, LiteLLM config, credit pricing
 ├── .gitignore
 │
+├── .github/
+│   └── workflows/
+│       └── deploy.yml           ← CI/CD: test → lint → build → deploy to Fly.io
+│
+├── infra/
+│   ├── docker/
+│   │   ├── Dockerfile.api       ← Multi-stage FastAPI build
+│   │   ├── Dockerfile.worker    ← Multi-stage Celery worker build (+ semgrep/ruff)
+│   │   ├── Dockerfile.mcp       ← Standalone MCP gateway
+│   │   ├── docker-compose.dev.yml  ← Full dev stack (6 services)
+│   │   └── scripts/
+│   │       └── init.sql         ← DB schema + RLS + indexes
+│   └── fly/
+│       ├── api.fly.toml         ← API gateway deployment config
+│       └── worker.fly.toml      ← Celery worker deployment config
+│
 ├── design-system/
 │   └── project-cave/
 │       ├── MASTER.md            ← Global design system (colors, typography, components)
@@ -90,12 +106,14 @@ cave/
     │
     ├── api/
     │   ├── __init__.py
-    │   ├── main.py              ← FastAPI app, CORS, routers, lifespan
+    │   ├── main.py              ← App factory, CORS, rate limiter, monitoring wiring
     │   ├── database.py          ← Async SQLAlchemy engine + Base
     │   ├── models.py            ← 5 ORM models (User, Project, Checkpoint, Usage, ModelConfig)
     │   ├── db_deps.py           ← FastAPI get_db dependency
     │   ├── schemas.py           ← Pydantic request/response schemas
-    │   ├── middleware.py        ← JWT auth (dev mode bypass)
+    │   ├── middleware.py        ← JWT + API key auth, tier extraction (Phase 4)
+    │   ├── ratelimit.py        ← Redis token bucket rate limiter (Phase 4)
+    │   ├── monitoring.py       ← JSON logging, /metrics, enhanced /health (Phase 4)
     │   ├── websocket.py         ← ConnectionManager + WS endpoint
     │   └── routers/
     │       ├── __init__.py
@@ -336,12 +354,14 @@ tests/test_checkpointer.py
 - [x] Per-agent tool configuration
 - [x] Worker lifecycle management (start/shutdown in worker.py)
 
-### 🔜 Phase 4 — Production Readiness
-- [ ] Fly.io deployment config
-- [ ] Docker Compose for full stack
-- [ ] CI/CD pipeline (GitHub Actions)
-- [ ] Rate limiting + auth hardening
-- [ ] Monitoring + alerting
+### 🔜 Phase 4 — Production Readiness (Done)
+- [x] Fly.io deployment config (api.fly.toml, worker.fly.toml)
+- [x] Dockerfiles for API, worker, MCP (multi-stage builds)
+- [x] Docker Compose for full stack (postgres, redis, api, worker, flower, dashboard)
+- [x] CI/CD pipeline (.github/workflows/deploy.yml — test → lint → deploy)
+- [x] Rate limiting (Redis token bucket with in-memory fallback, tier-based)
+- [x] Auth hardening (dual JWT + API key, tier extraction, failure logging)
+- [x] Monitoring (JSON structured logging, /metrics Prometheus endpoint, enhanced /health)
 
 ### 🔜 Phase 5 — Testing
 - [ ] Playwright UI tests
