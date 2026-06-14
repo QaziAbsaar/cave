@@ -1,0 +1,20 @@
+# ── cave-mcp Dockerfile ─────────────────────────────────────────────────────
+# Standalone MCP gateway server (optional — usually embedded in worker).
+# Exposes MCP tools over SSE transport for external tools like Claude Desktop.
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY src/pyproject.toml .
+RUN pip install --no-cache-dir -e .
+
+COPY src/ /app/src/
+
+EXPOSE 8080
+
+CMD ["python", "-m", "src.mcp_gateway.servers"]

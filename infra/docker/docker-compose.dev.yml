@@ -1,0 +1,137 @@
+# ── Docker Compose — Local Development ──────────────────────────────────────
+# Full Project Cave stack for local development.
+# See lan.md for service map and usage.
+
+name: cave-dev
+
+networks:
+  cave-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cave
+      POSTGRES_PASSWORD: cave_dev
+      POSTGRES_DB: cave
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - cave-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cave"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis ───────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - cave-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── FastAPI ─────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ../../
+      dockerfile: infra/docker/Dockerfile.api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    env_file:
+      - ../../.env.development
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://cave:cave_dev@postgres:5432/cave
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_PUBSUB_URL=redis://redis:6379/1
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - RATE_LIMIT_ENABLED=false
+    volumes:
+      - ../../src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - cave-net
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  # ── Celery Worker ───────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ../../
+      dockerfile: infra/docker/Dockerfile.worker
+    env_file:
+      - ../../.env.development
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://cave:cave_dev@postgres:5432/cave
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+      - MCP_FILESYSTEM_ROOT=/tmp/cave-sandbox
+    volumes:
+      - ../../src:/app/src
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - cave-net
+    command: celery -A src.worker worker --loglevel=debug --concurrency=2
+    restart: unless-stopped
+
+  # ── Celery Flower (monitoring) ──────────────────────────────────────────
+  flower:
+    image: mher/flower:2.0
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    networks:
+      - cave-net
+    restart: unless-stopped
+
+  # ── React Dashboard ─────────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: ../../src/dashboard
+      dockerfile: Dockerfile.dev
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - VITE_WS_URL=ws://localhost:8000
+    volumes:
+      - ../../src/dashboard:/app
+      - /app/node_modules
+    depends_on:
+      - api
+    networks:
+      - cave-net
+    restart: unless-stopped

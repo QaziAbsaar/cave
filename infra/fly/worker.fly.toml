@@ -1,0 +1,26 @@
+# ── Fly.io — Celery Worker ───────────────────────────────────────────────────
+# Scale to 0 when idle, scale up on queue depth.
+
+app = "cave-worker"
+primary_region = "iad"
+
+[env]
+  ENVIRONMENT = "production"
+  DEBUG = "false"
+  CELERY_CONCURRENCY = "2"
+
+[http_service]
+  internal_port = 8001
+  force_https = false
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[[vm]]
+  memory = "1024mb"
+  cpu_kind = "shared"
+  cpus = 2
+
+[deploy]
+  strategy = "immediate"

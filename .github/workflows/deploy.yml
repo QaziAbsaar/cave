@@ -1,0 +1,118 @@
+# ── CI/CD Pipeline — Project Cave ───────────────────────────────────────────
+# Test → Build → Deploy to Fly.io on pushes to main.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+jobs:
+
+  # ── Test ──────────────────────────────────────────────────────────────────
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cave
+          POSTGRES_PASSWORD: cave_test
+          POSTGRES_DB: cave_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready -U cave
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          cd src
+          pip install -e .
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run unit tests
+        run: |
+          cd src
+          python -m pytest tests/ -v -k "not integration"
+
+      - name: Run integration tests
+        run: |
+          cd src
+          python -m pytest tests/ -v -m integration
+        env:
+          DATABASE_URL: postgresql+asyncpg://cave:cave_test@localhost:5432/cave_test
+          REDIS_URL: redis://localhost:6379/0
+
+  # ── Lint ──────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install linters
+        run: pip install ruff
+      - name: Run ruff
+        run: ruff check src/ --no-cache
+
+  # ── Build & Deploy ────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Fly.io
+    needs: [test, lint]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy API
+        run: flyctl deploy --config infra/fly/api.fly.toml --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Deploy Worker
+        run: flyctl deploy --config infra/fly/worker.fly.toml --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Notify on failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_TITLE: "Deploy failed"
+          SLACK_COLOR: danger

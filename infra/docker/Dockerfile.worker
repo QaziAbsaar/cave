@@ -1,0 +1,35 @@
+# ── cave-worker Dockerfile ───────────────────────────────────────────────────
+# Celery worker — runs the LangGraph agent pipeline.
+# More memory than the API process (LLM calls are memory-intensive).
+
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev \
+    && rm -rf /var/apt/lists/*
+
+COPY src/pyproject.toml .
+RUN pip install --no-cache-dir -e .
+
+# ── Runtime ─────────────────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+COPY src/ /app/src/
+
+# SAST tools for Security Agent
+RUN pip install --no-cache-dir semgrep ruff 2>/dev/null || true
+
+EXPOSE 8001
+
+CMD ["celery", "-A", "src.worker", "worker", "--loglevel=info", "--concurrency=2"]
