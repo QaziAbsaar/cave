@@ -2,17 +2,26 @@
 
 Implements retry logic: on failure, routes back to the offending agent
 with specific feedback. Max 3 retries per agent before INTERVENTION_NEEDED.
+
+Phase 3: runs semgrep SAST and linter via MCP in addition to LLM review.
+Real SAST results are merged into the test_report.
 """
+
+from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from src.agents.base import BaseAgent
 from src.orchestrator.llm_adapter import call_llm
 from src.orchestrator.state import ProjectState, AgentStatus, AgentIteration
+
+if TYPE_CHECKING:
+    from src.mcp_gateway.gateway import MCPGateway
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +41,9 @@ class SecurityAgent(BaseAgent):
     Determines pass/fail and routes back to offending agents on failure.
     Tracks retry count per agent via state.iteration_counts.
 
-    Reads: All artifacts (db_schema_ddl, backend_code, frontend_code, api_spec_openapi).
+    Reads: All artifacts.
     Writes: test_report into artifacts.
-    Mutates: status, current_agent, security_history, iteration_counts.
+    Phase 3: merges real SAST/linter findings from MCP into the report.
     """
 
     def __init__(self) -> None:
@@ -44,20 +53,18 @@ class SecurityAgent(BaseAgent):
     async def run(
         self,
         state: ProjectState,
-        model_config: Optional[Any] = None,
+        gateway: Optional[MCPGateway] = None,
     ) -> ProjectState:
-        """Run the Security/QA Agent.
-
-        Args:
-            state: Current pipeline state (reads all artifacts).
-            model_config: Optional model configuration.
-
-        Returns:
-            Updated state with test_report and possibly modified status.
-        """
+        """Run the Security/QA Agent: LLM review + optional MCP SAST scan."""
         logger.info("Security Agent: reviewing project %s", state.project_id)
 
-        # Build review context
+        # ── Phase 3: Run SAST tools via MCP ────────────────────────────
+        mcp_findings: list[dict] = []
+        if gateway is not None:
+            mcp_findings = await self._run_sast_tools(state, gateway)
+        # ────────────────────────────────────────────────────────────────
+
+        # Build review context for LLM (include MCP findings if any)
         review_data = {
             "db_schema_ddl": state.artifacts.db_schema_ddl or "(empty)",
             "api_spec_openapi": state.artifacts.api_spec_openapi or {},
@@ -66,6 +73,8 @@ class SecurityAgent(BaseAgent):
             "dependencies": state.artifacts.dependencies,
             "security_history": [h.model_dump() for h in state.security_history],
         }
+        if mcp_findings:
+            review_data["sast_findings"] = mcp_findings
 
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -91,7 +100,6 @@ class SecurityAgent(BaseAgent):
             state.artifacts.test_report = test_report
 
             if not test_report:
-                # No issues — pass
                 state.status = AgentStatus.SUCCESS
                 logger.info("Security Agent: project %s PASSED", state.project_id)
                 return state
@@ -101,7 +109,6 @@ class SecurityAgent(BaseAgent):
             attempt = state.iteration_counts.get(offending_agent, 0) + 1
             state.iteration_counts[offending_agent] = attempt
 
-            # Record this iteration
             state.security_history.append(
                 AgentIteration(
                     agent=offending_agent,
@@ -112,7 +119,6 @@ class SecurityAgent(BaseAgent):
             )
 
             if attempt >= MAX_RETRIES_PER_AGENT:
-                # Exhausted retries — signal intervention needed
                 state.status = AgentStatus.INTERVENTION_NEEDED
                 state.current_agent = offending_agent
                 logger.warning(
@@ -121,7 +127,6 @@ class SecurityAgent(BaseAgent):
                     attempt,
                 )
             else:
-                # Route back to offending agent for fixes
                 state.current_agent = offending_agent
                 logger.info(
                     "Security Agent: routing back to %s (attempt %d/%d)",
@@ -137,11 +142,72 @@ class SecurityAgent(BaseAgent):
 
         return state
 
+    # ------------------------------------------------------------------
+    # Phase 3: MCP SAST integration
+    # ------------------------------------------------------------------
+
+    async def _run_sast_tools(
+        self,
+        state: ProjectState,
+        gateway: MCPGateway,
+    ) -> list[dict]:
+        """Run semgrep and linter via MCP, return merged findings."""
+        findings: list[dict] = []
+        target_dir = f"projects/{state.project_id}"
+
+        # 1. Run semgrep
+        try:
+            semgrep_result = await gateway.call_tool_text(
+                "run_semgrep",
+                {"target_dir": target_dir, "rules": "p/default"},
+            )
+            parsed = json.loads(semgrep_result)
+            results = parsed.get("results", [])
+            for r in results:
+                findings.append({
+                    "tool": "semgrep",
+                    "severity": r.get("extra", {}).get("severity", "medium"),
+                    "rule": r.get("check_id", "unknown"),
+                    "path": r.get("path", ""),
+                    "line": r.get("start", {}).get("line", 0),
+                    "message": r.get("extra", {}).get("message", r.get("short", "")),
+                })
+
+            logger.info("Semgrep found %d findings for project %s", len(results), state.project_id)
+        except Exception as exc:
+            logger.warning("Semgrep MCP scan failed (continuing): %s", exc)
+
+        # 2. Run linter
+        try:
+            lint_result = await gateway.call_tool_text(
+                "run_linter",
+                {"target_dir": target_dir, "tool": "ruff"},
+            )
+            parsed = json.loads(lint_result)
+            lint_findings = parsed.get("findings", [])
+            for r in lint_findings:
+                findings.append({
+                    "tool": "ruff",
+                    "severity": r.get("level", r.get("type", "medium")),
+                    "rule": r.get("rule", r.get("code", "unknown")),
+                    "path": r.get("filename", ""),
+                    "line": r.get("line", r.get("location", {}).get("line", 0)),
+                    "message": r.get("message", r.get("text", "")),
+                })
+
+            logger.info("Linter found %d findings for project %s", len(lint_findings), state.project_id)
+        except Exception as exc:
+            logger.warning("Linter MCP scan failed (continuing): %s", exc)
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _parse_report(content: str) -> Optional[dict]:
         """Parse JSON test_report from LLM response."""
-        import re
-
         pattern = r'```(?:json)?\s*\n?(\{[^`]*?"test_report"[^`]*?\})```'
         matches = re.findall(pattern, content, re.DOTALL)
         if matches:
@@ -150,13 +216,11 @@ class SecurityAgent(BaseAgent):
             except json.JSONDecodeError:
                 pass
 
-        # Try parsing entire response as JSON
         try:
             return json.loads(content)
         except (json.JSONDecodeError, TypeError):
             pass
 
-        # Return minimal report with raw content
         return {
             "passed": False,
             "issues": [{
@@ -176,7 +240,6 @@ class SecurityAgent(BaseAgent):
         if not issues:
             return "backend_agent"
 
-        # Count issues per agent, weighted by severity
         severity_weight = {"critical": 10, "high": 5, "medium": 2, "low": 1}
         agent_scores: dict[str, int] = {}
 
@@ -186,5 +249,4 @@ class SecurityAgent(BaseAgent):
             weight = severity_weight.get(sev, 1)
             agent_scores[agent] = agent_scores.get(agent, 0) + weight
 
-        # Return the agent with highest weighted score
         return max(agent_scores, key=agent_scores.get)

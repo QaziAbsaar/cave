@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+from typing import Optional
 from uuid import UUID
 
 from celery import Celery
@@ -21,8 +22,9 @@ from src.orchestrator.checkpointer import (
     load_latest_checkpoint,
     get_connection,
 )
-from src.orchestrator.graph import build_graph, set_checkpoint_callback
+from src.orchestrator.graph import build_graph, set_checkpoint_callback, set_mcp_gateway
 from src.orchestrator.state import ProjectState, AgentStatus
+from src.mcp_gateway import MCPGateway, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +131,21 @@ async def _run_pipeline(project_id: str) -> dict:
 
     set_checkpoint_callback(checkpoint_cb)
 
+    # ── Phase 3: Create MCP Gateway ───────────────────────────────────
+    gateway: Optional[MCPGateway] = None
+    try:
+        registry = ToolRegistry()
+        gateway = MCPGateway(registry)
+        await gateway.start_all()
+        set_mcp_gateway(gateway)
+        logger.info("MCP Gateway initialized for project %s", project_id)
+    except Exception as gw_err:
+        logger.warning(
+            "MCP Gateway initialization failed (continuing without MCP): %s",
+            gw_err,
+        )
+    # ──────────────────────────────────────────────────────────────────
+
     try:
         # Build and run the graph with Langfuse tracing
         graph = build_graph()
@@ -188,6 +205,12 @@ async def _run_pipeline(project_id: str) -> dict:
         raise
 
     finally:
+        # Phase 3: shut down MCP gateway
+        if gateway is not None:
+            try:
+                await gateway.shutdown()
+            except Exception as gw_err:
+                logger.warning("MCP Gateway shutdown error: %s", gw_err)
         await checkpointer_conn.close()
         await db_session.close()
 

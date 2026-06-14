@@ -1,13 +1,22 @@
-"""Backend Agent — generates FastAPI application code from DB schema using LLM."""
+"""Backend Agent — generates FastAPI application code from DB schema using LLM.
+
+Phase 3: after LLM generates code, writes files to disk via the filesystem MCP server.
+"""
+
+from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from src.agents.base import BaseAgent
 from src.orchestrator.llm_adapter import call_llm
 from src.orchestrator.state import ProjectState
+
+if TYPE_CHECKING:
+    from src.mcp_gateway.gateway import MCPGateway
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +32,8 @@ class BackendAgent(BaseAgent):
     """Generates FastAPI backend code from PostgreSQL schema and product brief.
 
     Reads: db_schema_ddl, product_spec, db_credentials from state.
-    Writes: backend_code (dict of filename→code), api_spec_openapi into artifacts.
+    Writes: backend_code, api_spec_openapi into artifacts.
+    Phase 3: writes generated files to sandbox via MCP filesystem server.
     """
 
     def __init__(self) -> None:
@@ -33,17 +43,9 @@ class BackendAgent(BaseAgent):
     async def run(
         self,
         state: ProjectState,
-        model_config: Optional[Any] = None,
+        gateway: Optional[MCPGateway] = None,
     ) -> ProjectState:
-        """Run the Backend Agent: call LLM and update artifacts.
-
-        Args:
-            state: Current pipeline state (reads db_schema_ddl, product_spec).
-            model_config: Optional model configuration.
-
-        Returns:
-            Updated state with backend_code and api_spec_openapi populated.
-        """
+        """Run the Backend Agent: call LLM, optionally write files via MCP."""
         logger.info("Backend Agent: generating backend for project %s", state.project_id)
 
         user_content = f"## Database Schema\n\n{state.artifacts.db_schema_ddl or '(pending)'}\n"
@@ -79,6 +81,33 @@ class BackendAgent(BaseAgent):
             if openapi_spec:
                 state.artifacts.api_spec_openapi = openapi_spec
 
+            # ── Phase 3: Write files to sandbox via MCP ─────────────────
+            if gateway is not None and files:
+                project_dir = f"projects/{state.project_id}/backend"
+                written = 0
+                for filepath, code in files.items():
+                    try:
+                        sandbox_path = f"{project_dir}/{filepath}"
+                        await gateway.call_tool_text(
+                            "write_file",
+                            {"path": sandbox_path, "content": code},
+                        )
+                        written += 1
+                    except Exception as write_err:
+                        logger.warning(
+                            "Failed to write %s via MCP (continuing): %s",
+                            filepath,
+                            write_err,
+                        )
+
+                logger.info(
+                    "Backend Agent: wrote %d/%d files via MCP to %s",
+                    written,
+                    len(files),
+                    project_dir,
+                )
+            # ────────────────────────────────────────────────────────────
+
             logger.info(
                 "Backend Agent: generated %d files for project %s",
                 len(state.artifacts.backend_code),
@@ -92,6 +121,10 @@ class BackendAgent(BaseAgent):
 
         return state
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _extract_files(content: str) -> dict[str, str]:
         """Extract filename→code dict from LLM response.
@@ -101,8 +134,6 @@ class BackendAgent(BaseAgent):
         code here
         ```
         """
-        import re
-
         files: dict[str, str] = {}
         pattern = r"```(?:filepath=)?([^\s]+)\s*\n?(.*?)```"
         matches = re.findall(pattern, content, re.DOTALL)
@@ -113,8 +144,6 @@ class BackendAgent(BaseAgent):
     @staticmethod
     def _extract_openapi(content: str) -> Optional[dict]:
         """Try to extract an OpenAPI spec dict from the LLM response."""
-        import re
-
         pattern = r"```(?:json|yaml)?\s*\n?(\{[\s\S]*?\"openapi\"[\s\S]*?\})```"
         matches = re.findall(pattern, content, re.DOTALL)
         if matches:

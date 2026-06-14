@@ -1,7 +1,7 @@
 # Project Cave — Hands-Off Document
 
-> **Status:** Phase 1 (Complete) + Phase 2 (Complete)
-> **Next:** Phase 3 — MCP Integration
+> **Status:** Phase 1 (Complete) + Phase 2 (Complete) + Phase 3 (Complete)
+> **Next:** Phase 4 — Production Readiness
 > **Last Updated:** 2026-06-15
 
 ---
@@ -102,8 +102,15 @@ cave/
     │       ├── projects.py      ← POST/GET/pause/resume endpoints
     │       └── models.py        ← Model config CRUD
     │
-    ├── mcp_gateway/             ← Stub for Phase 3
+    ├── mcp_gateway/             ← MCP Gateway (Phase 3)
+    │   ├── __init__.py         ← Exports MCPGateway, ToolRegistry
+    │   ├── gateway.py          ← MCP server lifecycle + tool call routing
+    │   ├── registry.py         ← Tool↔server mapping, agent↔tools config
     │   └── servers/
+    │       ├── __init__.py
+    │       ├── filesystem.py   ← MCP server: read/write sandboxed files
+    │       ├── supabase.py     ← MCP server: execute SQL + schema inspect
+    │       └── sast.py         ← MCP server: semgrep, ruff linting, pip-audit
     │
     ├── dashboard/
     │   ├── package.json         ← React + Vite + Tailwind + React Flow
@@ -204,6 +211,7 @@ Info:        #3B82F6
 | Icons | Lucide React | Consistent, tree-shakeable SVGs |
 | Fonts | Plus Jakarta Sans | SaaS-appropriate, excellent readability |
 | Auth | JWT (python-jose) | Stateless, simple Phase 1 solution |
+| MCP framework | official Python SDK (mcp) | stdio transport, subprocess lifecycle |
 | Migration | Alembic | Auto-generates from SQLAlchemy models |
 
 ---
@@ -320,12 +328,13 @@ tests/test_checkpointer.py
 - [x] Dashboard components (PipelineDAG, ArtifactViewer, EventStream)
 - [x] WebSocket hook + API client
 
-### 🔜 Phase 3 — MCP Integration
-- [ ] MCP Gateway service
-- [ ] Tool registry + binding
-- [ ] MCP server configs (Supabase, filesystem, SAST)
-- [ ] Replace stub agents with MCP tool calls
-- [ ] Per-agent tool configuration
+### 🔜 Phase 3 — MCP Integration (Done)
+- [x] MCP Gateway service (gateway.py)
+- [x] Tool registry + binding (registry.py)
+- [x] MCP server configs (filesystem, supabase, sast)
+- [x] Agents use MCP tool calls (DDL execution, file writes, SAST)
+- [x] Per-agent tool configuration
+- [x] Worker lifecycle management (start/shutdown in worker.py)
 
 ### 🔜 Phase 4 — Production Readiness
 - [ ] Fly.io deployment config

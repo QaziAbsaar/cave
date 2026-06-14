@@ -1,8 +1,11 @@
-"""LangGraph DAG definition — 4-agent pipeline with real LLM agents.
+"""LangGraph DAG definition — 4-agent pipeline with real LLM agents and MCP tool integration.
 
 Phase 2: agents call LLM via LiteLLM to generate real artifacts.
+Phase 3: agents optionally use MCP gateway for tool calls (filesystem, supabase, SAST).
 Checkpoints are saved after every agent step.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
@@ -10,7 +13,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from langgraph.graph import StateGraph
 
@@ -21,18 +24,28 @@ from src.agents.backend import BackendAgent
 from src.agents.frontend import FrontendAgent
 from src.agents.security import SecurityAgent
 
+if TYPE_CHECKING:
+    from src.mcp_gateway.gateway import MCPGateway
+
 logger = logging.getLogger(__name__)
 
 REDIS_PUBSUB_URL: str = os.getenv("REDIS_PUBSUB_URL", "redis://localhost:6379/1")
 
-# Optional checkpoint callback injected by the worker
+# Optional external callbacks injected by the worker
 _save_checkpoint_cb: Optional[Callable[[ProjectState], None]] = None
+_mcp_gateway: Optional[MCPGateway] = None
 
 
 def set_checkpoint_callback(cb: Callable[[ProjectState], None]) -> None:
     """Inject a checkpoint save callback into the graph runner."""
     global _save_checkpoint_cb
     _save_checkpoint_cb = cb
+
+
+def set_mcp_gateway(gateway: MCPGateway) -> None:
+    """Inject the MCP gateway into the graph runner (Phase 3)."""
+    global _mcp_gateway
+    _mcp_gateway = gateway
 
 
 def _publish_event(project_id: str, event: str, data: dict[str, Any]) -> None:
@@ -56,7 +69,8 @@ def _publish_event(project_id: str, event: str, data: dict[str, Any]) -> None:
 async def _run_agent_node(state: ProjectState, agent_name: str) -> ProjectState:
     """Generic agent node runner: instantiates agent, publishes events, checkpoints.
 
-    Maps agent_name to the correct agent class and runs it.
+    Maps agent_name to the correct agent class, passes the MCP gateway,
+    and runs it.
     """
     project_id = state.project_id
 
@@ -66,9 +80,9 @@ async def _run_agent_node(state: ProjectState, agent_name: str) -> ProjectState:
         "step": state.step_number + 1,
     })
 
-    # Instantiate the correct agent
+    # Instantiate the correct agent and run with optional MCP gateway
     agent = _create_agent(agent_name)
-    updated_state = await agent.run(state)
+    updated_state = await agent.run(state, gateway=_mcp_gateway)
 
     # Update tracking fields
     updated_state.current_agent = agent_name
