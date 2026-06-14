@@ -1,4 +1,7 @@
-"""Celery worker — receives project submissions and runs the LangGraph pipeline."""
+"""Celery worker — receives project submissions and runs the LangGraph pipeline.
+
+Supports crash recovery via load_latest_checkpoint and Langfuse observability.
+"""
 
 import asyncio
 import json
@@ -13,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.api.database import engine
 from src.api.models import Project
-from src.orchestrator.checkpointer import save_checkpoint, get_connection
+from src.orchestrator.checkpointer import (
+    save_checkpoint,
+    load_latest_checkpoint,
+    get_connection,
+)
 from src.orchestrator.graph import build_graph, set_checkpoint_callback
 from src.orchestrator.state import ProjectState, AgentStatus
 
@@ -55,7 +62,7 @@ def _publish_error(project_id: str, message: str) -> None:
 
 
 async def _load_project_from_db(project_id: str) -> tuple[Project, AsyncSession]:
-    """Load a Project record from the DB and return (project, session)."""
+    """Load a Project record from the DB."""
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     session = session_factory()
     try:
@@ -71,16 +78,41 @@ async def _load_project_from_db(project_id: str) -> tuple[Project, AsyncSession]
         raise
 
 
+async def _build_initial_state(project: Project) -> ProjectState:
+    """Build a fresh ProjectState, checking for existing checkpoints for recovery.
+
+    If a checkpoint exists (crash recovery), loads latest instead of creating fresh.
+    """
+    conn = await get_connection()
+    try:
+        latest = await load_latest_checkpoint(str(project.id), conn)
+        if latest is not None:
+            logger.info(
+                "Crash recovery: resuming project %s from checkpoint v%d",
+                project.id,
+                latest.version,
+            )
+            latest.status = AgentStatus.RUNNING
+            return latest
+    except Exception:
+        logger.info("No checkpoint found for %s — starting fresh", project.id)
+    finally:
+        await conn.close()
+
+    # Fresh start
+    return ProjectState(
+        project_id=str(project.id),
+        user_id=str(project.user_id),
+        initial_prompt=project.initial_prompt,
+    )
+
+
 async def _run_pipeline(project_id: str) -> dict:
     """Async core: load project, run graph with checkpointing, update status."""
     project, db_session = await _load_project_from_db(project_id)
 
-    # Build initial state
-    state = ProjectState(
-        project_id=project_id,
-        user_id=str(project.user_id),
-        initial_prompt=project.initial_prompt,
-    )
+    # Build or recover state
+    state = await _build_initial_state(project)
     state.status = AgentStatus.RUNNING
 
     # Update project status in DB
@@ -90,19 +122,47 @@ async def _run_pipeline(project_id: str) -> dict:
     # Open a direct asyncpg connection for checkpoints
     checkpointer_conn = await get_connection()
 
-    # Define checkpoint callback (called by mock agents in the graph)
+    # Define checkpoint callback (called by agents in the graph)
     def checkpoint_cb(s: ProjectState) -> None:
-        """Synchronous wrapper: runs async save in current event loop."""
         loop = asyncio.get_event_loop()
         loop.run_until_complete(save_checkpoint(s, checkpointer_conn))
 
     set_checkpoint_callback(checkpoint_cb)
 
     try:
-        # Build and run the graph
+        # Build and run the graph with Langfuse tracing
         graph = build_graph()
-        final_state = await graph.ainvoke(state.model_dump())
+
+        config = {
+            "recursion_limit": 15,  # Cost safety guardrail — NEVER remove
+        }
+
+        # Wire Langfuse CallbackHandler if keys are configured
+        langfuse_pk = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+        langfuse_sk = os.getenv("LANGFUSE_SECRET_KEY", "")
+        if langfuse_pk and langfuse_sk:
+            try:
+                from langfuse.langchain import CallbackHandler
+
+                handler = CallbackHandler(
+                    user_id=state.user_id,
+                    session_id=state.project_id,
+                    trace_name="cave-agent-run",
+                )
+                config["callbacks"] = [handler]
+            except Exception as exc:
+                logger.warning("Failed to init Langfuse handler: %s", exc)
+
+        # Invoke the graph
+        final_state = await graph.ainvoke(state.model_dump(), config)
         result = ProjectState.model_validate(final_state)
+
+        # Store trace ID if Langfuse was used
+        if langfuse_pk and langfuse_sk:
+            try:
+                result.langfuse_trace_id = state.project_id  # simplified trace tracking
+            except Exception:
+                pass
 
         # Update project status
         project.status = result.status.value if isinstance(result.status, AgentStatus) else result.status
