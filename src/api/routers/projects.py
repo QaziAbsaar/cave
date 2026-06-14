@@ -16,7 +16,7 @@ from src.api.schemas import (
     ProjectStatusResponse,
     PauseResumeResponse,
 )
-from src.orchestrator.state import ProjectState, AgentStatus
+from src.orchestrator.state import ProjectState
 from src.worker import run_project
 
 logger = logging.getLogger(__name__)

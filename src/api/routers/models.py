@@ -1,6 +1,5 @@
 """Model configuration route stubs (placeholder responses for now)."""
 
-from typing import Optional
 
 from fastapi import APIRouter, Depends
 

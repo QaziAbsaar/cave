@@ -1,12 +1,11 @@
 """pytest fixtures and FastAPI dependency overrides for testing."""
 
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.main import app
 from src.api.db_deps import get_db

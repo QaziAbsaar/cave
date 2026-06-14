@@ -197,7 +197,7 @@ async def _run_pipeline(project_id: str) -> dict:
             "step_number": result.step_number,
         }
 
-    except Exception as exc:
+    except Exception:
         logger.exception("Pipeline error: project=%s", project_id)
         await db_session.rollback()
         project.status = "failed"

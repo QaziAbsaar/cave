@@ -13,10 +13,9 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
@@ -174,10 +173,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if any(path.startswith(p) for p in _BYPASS_PATHS):
             return await call_next(request)
 
-        # Determine user key
-        user_id = self._get_user_id(request)
-        tier = self._get_user_tier(request)
-        key = f"{tier}:{user_id}" if user_id else f"ip:{request.client.host}"
+        # Determine user key (state may not be set if auth dep hasn't run yet)
+        user_id = getattr(request.state, "user_id", None) if hasattr(request.state, "user_id") else None
+        tier = getattr(request.state, "user_tier", "free") if hasattr(request.state, "user_tier") else "free"
+        if user_id is None:
+            auth = request.headers.get("Authorization", "")
+            key = f"{tier}:anon:{hash(auth) % 10_000_000:07d}"
+        else:
+            key = f"{tier}:{user_id}"
 
         # Get limits for this tier
         if self._max_requests is not None:

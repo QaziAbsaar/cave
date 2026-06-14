@@ -17,7 +17,6 @@ import time
 from typing import Any, Dict
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
@@ -127,24 +126,24 @@ def _format_metrics() -> str:
     """Format metrics as Prometheus text format."""
     uptime = time.time() - _metrics["start_time"]
     lines = [
-        f'# HELP cave_requests_total Total requests',
-        f'# TYPE cave_requests_total counter',
+        '# HELP cave_requests_total Total requests',
+        '# TYPE cave_requests_total counter',
         f'cave_requests_total {_metrics["requests_total"]}',
         '',
-        f'# HELP cave_requests_active Currently active requests',
-        f'# TYPE cave_requests_active gauge',
+        '# HELP cave_requests_active Currently active requests',
+        '# TYPE cave_requests_active gauge',
         f'cave_requests_active {_metrics["requests_active"]}',
         '',
-        f'# HELP cave_errors_total Total errors',
-        f'# TYPE cave_errors_total counter',
+        '# HELP cave_errors_total Total errors',
+        '# TYPE cave_errors_total counter',
         f'cave_errors_total {_metrics["errors_total"]}',
         '',
-        f'# HELP cave_uptime_seconds Service uptime',
-        f'# TYPE cave_uptime_seconds gauge',
+        '# HELP cave_uptime_seconds Service uptime',
+        '# TYPE cave_uptime_seconds gauge',
         f'cave_uptime_seconds {uptime:.0f}',
         '',
-        f'# HELP cave_requests_by_method Request count by HTTP method',
-        f'# TYPE cave_requests_by_method counter',
+        '# HELP cave_requests_by_method Request count by HTTP method',
+        '# TYPE cave_requests_by_method counter',
     ]
     for method, count in sorted(_metrics["requests_by_method"].items()):
         lines.append(f'cave_requests_by_method{{method="{method}"}} {count}')

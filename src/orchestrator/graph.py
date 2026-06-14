@@ -7,7 +7,6 @@ Checkpoints are saved after every agent step.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os

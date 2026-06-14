@@ -9,7 +9,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Optional
 
 from src.agents.base import BaseAgent
 from src.orchestrator.llm_adapter import call_llm

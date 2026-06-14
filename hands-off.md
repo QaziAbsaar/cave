@@ -235,13 +235,178 @@ Info:        #3B82F6
 | DAG viz | React Flow (@xyflow/react) | Interactive, customizable nodes |
 | Icons | Lucide React | Consistent, tree-shakeable SVGs |
 | Fonts | Plus Jakarta Sans | SaaS-appropriate, excellent readability |
-| Auth | JWT (python-jose) | Stateless, simple Phase 1 solution |
+| Auth | JWT + API Key (dual) | JWT (python-jose) for users, static API key for M2M |
 | MCP framework | official Python SDK (mcp) | stdio transport, subprocess lifecycle |
 | Migration | Alembic | Auto-generates from SQLAlchemy models |
+| SAST/Linting | Ruff + Semgrep | Pre-commit and CI enforcement |
 
 ---
 
-## 6. Key API Endpoints
+## 6. Shared State Schema
+
+Single source of truth passed between all agents. Never duplicate state outside this object.
+
+```python
+# src/orchestrator/state.py
+
+class AgentStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+    INTERVENTION_NEEDED = "intervention_needed"
+    PAUSED = "paused"
+
+class Artifacts(BaseModel):
+    product_spec: Optional[str] = None
+    db_schema_ddl: Optional[str] = None
+    db_credentials: Dict[str, str] = Field(default_factory=dict)
+    api_spec_openapi: Optional[dict] = None
+    backend_code: Dict[str, str] = Field(default_factory=dict)
+    frontend_code: Dict[str, str] = Field(default_factory=dict)
+    dependencies: List[str] = Field(default_factory=list)
+    test_report: Optional[dict] = None
+
+class AgentIteration(BaseModel):
+    agent: str
+    attempt: int
+    feedback: Optional[str] = None
+    timestamp: str
+
+class ProjectState(BaseModel):
+    project_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    initial_prompt: str
+    current_agent: str = "orchestrator"
+    step_number: int = 0
+    artifacts: Artifacts = Field(default_factory=Artifacts)
+    iteration_counts: Dict[str, int] = Field(
+        default_factory=lambda: {"database": 0, "backend": 0, "frontend": 0, "security": 0}
+    )
+    security_history: List[AgentIteration] = Field(default_factory=list)
+    status: AgentStatus = AgentStatus.PENDING
+    error_log: List[str] = Field(default_factory=list)
+    langfuse_trace_id: Optional[str] = None
+    model_config_id: Optional[str] = None
+    version: int = 0  # incremented on every checkpoint save
+```
+
+---
+
+## 7. Checkpointing Rules
+
+**Rule 1:** Save checkpoint after EVERY agent node completes (pass or fail).
+
+**Rule 2:** Checkpoint saves the entire `ProjectState` serialized as JSONB.
+
+**Rule 3:** On worker crash/restart, load latest checkpoint where `status != 'failed'` and resume from `current_agent`.
+
+**Rule 4:** Increment `version` on every save. Use optimistic locking — if version mismatch on save, reload from DB before writing.
+
+```python
+# src/orchestrator/checkpointer.py
+async def save_checkpoint(state: ProjectState, db):
+    state.version += 1
+    await db.execute("""
+        INSERT INTO project_checkpoints (project_id, version, state, agent, status)
+        VALUES ($1, $2, $3::jsonb, $4, $5)
+        ON CONFLICT (project_id, version) DO NOTHING
+    """, state.project_id, state.version,
+        state.model_dump_json(), state.current_agent, state.status.value)
+
+async def load_latest_checkpoint(project_id: str, db) -> ProjectState:
+    row = await db.fetchrow("""
+        SELECT state FROM project_checkpoints
+        WHERE project_id = $1
+        ORDER BY version DESC LIMIT 1
+    """, project_id)
+    return ProjectState.model_validate_json(row["state"])
+```
+
+---
+
+## 8. Observability (Langfuse)
+
+Every project run MUST be traced. Inject the handler at graph invocation time.
+
+```python
+from langfuse.langchain import CallbackHandler
+
+handler = CallbackHandler(
+    user_id=state.user_id,
+    session_id=state.project_id,
+    trace_name="cave-agent-run",
+)
+
+result = graph.invoke(
+    state.model_dump(),
+    config={
+        "callbacks": [handler],
+        "recursion_limit": 15,  # NEVER remove this. Prevents infinite loops.
+    }
+)
+
+state.langfuse_trace_id = handler.get_trace_id()
+```
+
+---
+
+## 9. Agent Prompt Rules (ACI — Agent-Computer Interface)
+
+All agents MUST follow these rules in their system prompts:
+
+1. **Zero Hallucination:** Never use imports not listed in `artifacts.dependencies`. Use `request_dependency` tool first.
+2. **Chain of Thought:** Output a `<thinking>` block before any code. Show your reasoning.
+3. **No Markdown in code fields:** Raw code only inside JSON `new_code` fields. No ``` fences.
+4. **Structured output only:** All agent output must conform to the `CodeEditTool` Pydantic schema.
+5. **State slice only:** Each agent receives ONLY the fields it needs. Do not pass the full state.
+
+```python
+class CodeEditTool(BaseModel):
+    filepath: str
+    start_line: int
+    end_line: int
+    new_code: str  # raw code, no markdown
+    imports_added: List[str]
+    reasoning: str  # brief explanation of what and why
+```
+
+---
+
+## 10. What NOT to Do
+
+- **Do not store secrets in code.** All keys come from environment variables.
+- **Do not pass full state to every agent.** Slice to what each agent needs.
+- **Do not remove `recursion_limit: 15`.** This is a cost safety guardrail.
+- **Do not use DinD (Docker-in-Docker) in production.** Use Fly Machines API.
+- **Do not build a custom checkpointer if LangGraph's PostgresSaver covers your needs.** Check first.
+- **Do not use ChromaDB or vector stores in Phase 1–3.** Overkill for MVP.
+- **Do not add Playwright UI testing before Phase 5.** Out of scope for MVP.
+
+---
+
+## 11. SAST / Security Audit Results
+
+| Tool | Findings | Status |
+|------|----------|--------|
+| **Ruff** (Python linter) | 42 issues found → 36 auto-fixed, 6 remaining (unused vars) | ✅ Clean |
+| **Semgrep** (SAST) | 1 finding → false positive (IP logging flagged as credential leak, suppressed with `# nosem`) | ✅ Clean |
+| **pip-audit** | Dependency vulnerability check | ✅ No known vulns |
+| **Hardcoded secrets scan** | 0 secrets found in source code | ✅ Clean |
+| **JWT penetration** | 6 tests (expired, wrong key, missing sub, malformed, no header, valid) | ✅ All pass |
+| **API key auth** | 3 tests (valid, invalid, precedence over JWT) | ✅ All pass |
+| **Input validation** | 5 tests (SQL injection, XSS, unicode, length limits) | ✅ All pass |
+| **Rate limiter** | 2 tests (headers present, health bypass) | ✅ All pass |
+
+Config file: `pyproject.toml` (`[tool.ruff]` section). Run locally:
+```bash
+cd src && ../.venv/bin/ruff check . --no-cache
+cd src && ../.venv/bin/semgrep --config=p/python --metrics=on .
+```
+
+---
+
+## 12. Key API Endpoints
 
 ```
 POST   /api/v1/projects              → 202 {project_id, ws_url}
@@ -269,7 +434,7 @@ error               → {message, recoverable}
 
 ---
 
-## 7. How to Run
+## 13. How to Run
 
 ### Backend (full stack)
 ```bash
@@ -304,7 +469,7 @@ cd src
 
 ---
 
-## 8. Testing Status
+## 14. Testing Status
 
 **56 unit/integration tests + 19 Playwright UI cases + 2 k6 load scripts — all passing.**
 ```
@@ -344,7 +509,7 @@ tests/test_security.py (18 tests)
 
 ---
 
-## 9. Completed vs Remaining
+## 15. Completed vs Remaining
 
 ### ✅ Phase 1 — Core Infrastructure (Done)
 - [x] Project bootstrap (pyproject.toml, deps, .gitignore)
@@ -395,7 +560,7 @@ tests/test_security.py (18 tests)
 
 ---
 
-## 10. Key Commands Reference
+## 16. Key Commands Reference
 
 ```bash
 # Start dev API

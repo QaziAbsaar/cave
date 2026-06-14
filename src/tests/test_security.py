@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import patch
 
 import pytest
@@ -69,7 +68,8 @@ class TestJWTAuthPenetration:
 
     async def test_expired_token_rejected(self, client):
         """Token with expired 'exp' claim → 401."""
-        import jwt, time
+        import jwt
+        import time
         expired_token = jwt.encode(
             {"sub": "user-1", "exp": int(time.time()) - 3600},
             SECRET_KEY,

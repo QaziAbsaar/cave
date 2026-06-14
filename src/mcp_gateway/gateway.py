@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
 from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional
 

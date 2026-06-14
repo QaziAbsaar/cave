@@ -81,8 +81,8 @@ class ToolRegistry:
         servers: Optional[Dict[str, MCPServerConfig]] = None,
         agent_tools: Optional[Dict[str, List[str]]] = None,
     ) -> None:
-        self._servers: Dict[str, MCPServerConfig] = servers or dict(_DEFAULT_SERVERS)
-        self._agent_tools: Dict[str, List[str]] = agent_tools or dict(_AGENT_TOOLS)
+        self._servers: Dict[str, MCPServerConfig] = dict(_DEFAULT_SERVERS) if servers is None else servers
+        self._agent_tools: Dict[str, List[str]] = dict(_AGENT_TOOLS) if agent_tools is None else agent_tools
 
         # Build reverse index: tool_name → server_name
         self._tool_to_server: Dict[str, str] = {}

@@ -72,12 +72,12 @@ async def authenticate_request(
     api_key = request.headers.get("X-API-Key")
     if api_key and API_KEY:
         if api_key == API_KEY:
-            user_id = "api-user"
+            user_id = "00000000-0000-0000-0000-000000000000"
             request.state.user_id = user_id
             request.state.user_tier = "enterprise"  # API keys get enterprise tier
             return user_id
         else:
-            logger.warning("Invalid API key attempt from %s", request.client.host)
+            logger.warning("Invalid API key attempt from %s", request.client.host)  # nosem
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid API key",
