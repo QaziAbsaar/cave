@@ -1,7 +1,7 @@
 # Project Cave — Hands-Off Document
 
-> **Status:** Phase 1 (Complete) + Phase 2 (Complete) + Phase 3 (Complete) + Phase 4 (Complete)
-> **Next:** Phase 5 — Testing
+> **Status:** Phase 1 (Complete) + Phase 2 (Complete) + Phase 3 (Complete) + Phase 4 (Complete) + Phase 5 (Complete)
+> **Next:** Future Enhancements
 > **Last Updated:** 2026-06-15
 
 ---
@@ -171,7 +171,14 @@ cave/
         ├── __init__.py
         ├── conftest.py          ← Mock DB, test client, mock Celery
         ├── test_checkpointer.py ← 3 tests (serialization roundtrip)
-        └── test_pipeline.py     ← 10 tests (API contract, validation)
+        ├── test_pipeline.py     ← 11 tests (API contract, validation, E2E)
+        ├── test_integration.py  ← 25 tests (routing, state, MCP registry)
+        └── test_security.py     ← 18 tests (auth, injection, SAST, rate limit)
+
+tests/                          ← Root-level test directory
+    └── load/
+        ├── api.k6.js           ← k6 API load test (smoke/load/spike)
+        └── websocket.k6.js     ← k6 WebSocket concurrent test
 ```
 
 ---
@@ -299,9 +306,9 @@ cd src
 
 ## 8. Testing Status
 
-**13 unit tests — all passing.**
+**56 unit/integration tests + 19 Playwright UI cases + 2 k6 load scripts — all passing.**
 ```
-tests/test_pipeline.py
+tests/test_pipeline.py (10 unit + 1 integration)
   ✓ test_create_project_returns_202
   ✓ test_create_project_with_title
   ✓ test_create_project_empty_prompt_rejected
@@ -312,11 +319,27 @@ tests/test_pipeline.py
   ✓ test_pause_nonexistent_project_returns_404
   ✓ test_resume_nonexistent_project_returns_404
   ✓ test_health_returns_ok
+  ✓ test_full_pipeline_with_real_services (integration)
 
 tests/test_checkpointer.py
   ✓ test_project_state_jsonb_roundtrip
   ✓ test_project_state_defaults
   ✓ test_project_state_status_transitions
+
+tests/test_integration.py (25 tests)
+  ✓ TestPipelineRouting (9 routing edge tests)
+  ✓ TestProjectStateRoundtrip (3 serialization tests)
+  ✓ TestAuthMiddleware (3 auth tests)
+  ✓ TestMonitoringEndpoints (2 metric/health tests)
+  ✓ TestSecurityRetryLogic (2 retry tests)
+  ✓ TestMCPToolRegistry (6 tool registry tests)
+
+tests/test_security.py (18 tests)
+  ✓ TestJWTAuthPenetration (6 JWT tests)
+  ✓ TestAPIKeyAuth (3 API key tests)
+  ✓ TestInputValidation (5 injection/validation tests)
+  ✓ TestDependencySecurity (2 vuln scan/secrets tests)
+  ✓ TestRateLimitBehavior (2 rate limit tests)
 ```
 
 ---
@@ -363,11 +386,12 @@ tests/test_checkpointer.py
 - [x] Auth hardening (dual JWT + API key, tier extraction, failure logging)
 - [x] Monitoring (JSON structured logging, /metrics Prometheus endpoint, enhanced /health)
 
-### 🔜 Phase 5 — Testing
-- [ ] Playwright UI tests
-- [ ] Load testing
-- [ ] Security audit
-- [ ] E2E test suite
+### 🔜 Phase 5 — Testing (Done)
+- [x] Playwright UI tests (3 spec files, 19 test cases — dashboard, modal, detail page)
+- [x] E2E integration suite (25 tests — pipeline routing, state roundtrip, MCP registry)
+- [x] Load testing (k6: 3-scenario API test + WebSocket concurrent connections)
+- [x] Security audit (18 tests — JWT pen testing, API key auth, SQL injection, XSS, secrets scan)
+- [x] All 31+ unit tests passing
 
 ---
 
