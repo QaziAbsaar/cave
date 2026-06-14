@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-cave-700;
+  }
+
+  body {
+    @apply bg-cave-950 text-cave-50 antialiased;
+    font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+  }
+
+  code,
+  pre {
+    font-family: "JetBrains Mono", monospace;
+  }
+
+  /* Focus ring for keyboard navigation */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent-500/50 ring-offset-2 ring-offset-cave-950;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    @apply w-2;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-cave-900;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-cave-600 rounded-full;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-cave-900 rounded-xl p-5 border border-cave-700/50
+           transition-all duration-200;
+  }
+  .card:hover {
+    @apply shadow-lg shadow-black/20 border-cave-600/50;
+    transform: translateY(-1px);
+  }
+
+  .btn-primary {
+    @apply bg-accent-500 text-white px-5 py-3 rounded-lg font-semibold
+           transition-all duration-200 cursor-pointer
+           hover:bg-accent-600 hover:shadow-lg hover:shadow-accent-500/20
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-cave-800 text-cave-100 border border-cave-600 px-5 py-3 rounded-lg font-semibold
+           transition-all duration-200 cursor-pointer
+           hover:bg-cave-700 hover:border-cave-500;
+  }
+
+  .btn-ghost {
+    @apply text-cave-400 px-3 py-2 rounded-lg
+           transition-all duration-200 cursor-pointer
+           hover:text-cave-100 hover:bg-cave-800;
+  }
+
+  .input {
+    @apply w-full bg-cave-800 border border-cave-600 text-cave-50
+           px-4 py-3 rounded-lg
+           placeholder:text-cave-400
+           focus:outline-none focus:ring-2 focus:ring-accent-500/50 focus:border-accent-500
+           transition-all duration-200;
+  }
+
+  .status-pending {
+    @apply text-cave-400 bg-cave-500/10;
+  }
+  .status-running {
+    @apply text-blue-400 bg-blue-500/10 animate-status-pulse;
+  }
+  .status-success {
+    @apply text-accent-400 bg-accent-500/10;
+  }
+  .status-failed {
+    @apply text-red-400 bg-red-500/10;
+  }
+  .status-intervention {
+    @apply text-amber-400 bg-amber-500/10;
+  }
+}
