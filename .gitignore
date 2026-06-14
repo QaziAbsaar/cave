@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+*.so
+
+# Environment
+.env
+.env.local
+.env.production
+.env.development
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+coverage/
+htmlcov/
+*.coverage
+.coverage
+
+# Node (dashboard)
+node_modules/
+.next/
+.nuxt/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Docker
+.docker/
+
+# Claude
+.claude/settings.local.json
+.claude/worktrees/
+
+# Dashboards / Build
+src/dashboard/dist/
+src/dashboard/build/
+src/dashboard/.next/
+
+# Migration versions (generated)
+src/migrations/versions/*.pyc
+
+# Logs
+*.log

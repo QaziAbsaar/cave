@@ -1,0 +1,154 @@
+"""Celery worker — receives project submissions and runs the LangGraph pipeline."""
+
+import asyncio
+import json
+import logging
+import os
+import time
+from uuid import UUID
+
+from celery import Celery
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from src.api.database import engine
+from src.api.models import Project
+from src.orchestrator.checkpointer import save_checkpoint, get_connection
+from src.orchestrator.graph import build_graph, set_checkpoint_callback
+from src.orchestrator.state import ProjectState, AgentStatus
+
+logger = logging.getLogger(__name__)
+
+REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+celery_app = Celery(
+    "cave",
+    broker=REDIS_URL,
+    backend=REDIS_URL,
+)
+
+celery_app.conf.update(
+    task_serializer="json",
+    accept_content=["json"],
+    result_serializer="json",
+    timezone="UTC",
+    enable_utc=True,
+)
+
+
+def _publish_error(project_id: str, message: str) -> None:
+    """Publish an error event to the project's Redis channel."""
+    import redis as sync_redis
+    try:
+        r = sync_redis.from_url(REDIS_URL)
+        r.publish(
+            f"project:{project_id}",
+            json.dumps({
+                "event": "error",
+                "project_id": project_id,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "data": {"message": message, "recoverable": True},
+            }),
+        )
+    except Exception:
+        pass
+
+
+async def _load_project_from_db(project_id: str) -> tuple[Project, AsyncSession]:
+    """Load a Project record from the DB and return (project, session)."""
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_factory()
+    try:
+        result = await session.execute(
+            select(Project).where(Project.id == UUID(project_id))
+        )
+        project = result.scalar_one_or_none()
+        if project is None:
+            raise ValueError(f"Project not found: {project_id}")
+        return project, session
+    except Exception:
+        await session.close()
+        raise
+
+
+async def _run_pipeline(project_id: str) -> dict:
+    """Async core: load project, run graph with checkpointing, update status."""
+    project, db_session = await _load_project_from_db(project_id)
+
+    # Build initial state
+    state = ProjectState(
+        project_id=project_id,
+        user_id=str(project.user_id),
+        initial_prompt=project.initial_prompt,
+    )
+    state.status = AgentStatus.RUNNING
+
+    # Update project status in DB
+    project.status = "running"
+    await db_session.commit()
+
+    # Open a direct asyncpg connection for checkpoints
+    checkpointer_conn = await get_connection()
+
+    # Define checkpoint callback (called by mock agents in the graph)
+    def checkpoint_cb(s: ProjectState) -> None:
+        """Synchronous wrapper: runs async save in current event loop."""
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(save_checkpoint(s, checkpointer_conn))
+
+    set_checkpoint_callback(checkpoint_cb)
+
+    try:
+        # Build and run the graph
+        graph = build_graph()
+        final_state = await graph.ainvoke(state.model_dump())
+        result = ProjectState.model_validate(final_state)
+
+        # Update project status
+        project.status = result.status.value if isinstance(result.status, AgentStatus) else result.status
+        project.current_agent = result.current_agent
+        await db_session.commit()
+
+        logger.info(
+            "Pipeline done: project=%s status=%s steps=%d",
+            project_id, project.status, result.step_number,
+        )
+
+        return {
+            "project_id": project_id,
+            "status": project.status,
+            "step_number": result.step_number,
+        }
+
+    except Exception as exc:
+        logger.exception("Pipeline error: project=%s", project_id)
+        await db_session.rollback()
+        project.status = "failed"
+        await db_session.commit()
+        raise
+
+    finally:
+        await checkpointer_conn.close()
+        await db_session.close()
+
+
+@celery_app.task(bind=True, max_retries=3)
+def run_project(self, project_id: str) -> dict:
+    """Entry point task: runs the full agent pipeline for a project.
+
+    Args:
+        project_id: UUID string identifying the project.
+
+    Returns:
+        Dict with project_id and final status.
+    """
+    logger.info("run_project started: project=%s", project_id)
+
+    try:
+        result = asyncio.run(_run_pipeline(project_id))
+        return result
+
+    except Exception as exc:
+        logger.exception("run_project failed: project=%s", project_id)
+        _publish_error(project_id, str(exc))
+        raise self.retry(exc=exc, countdown=10)
